@@ -1,0 +1,19 @@
+{
+  "name": "sonic-deployer",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Sonic Smart Contract Deployer by ONIXIA",
+  "main": "deploy.js",
+  "scripts": {
+    "start": "node deploy.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.87.6",
+    "@solana/spl-token": "^0.3.9",
+    "@metaplex-foundation/js": "^0.19.4",
+    "bs58": "^5.0.0",
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.3",
+    "ora": "^7.0.1"
+  }
+}
