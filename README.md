@@ -48,5 +48,4 @@ npm start
 4. View Previous Reports
 5. Exit
 
-## License
-MIT
+
