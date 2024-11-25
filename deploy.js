@@ -12,7 +12,18 @@ import {
     SystemProgram,
     sendAndConfirmTransaction 
 } from '@solana/web3.js';
-import * as splToken from '@solana/spl-token';
+import { 
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    createMint,
+    createInitializeMintInstruction,
+    createAssociatedTokenAccountInstruction,
+    createMintToInstruction,
+    createTransferInstruction,
+    createBurnInstruction,
+    getAssociatedTokenAddress,
+    getAccount
+} from '@solana/spl-token';
 import { 
     Metaplex
 } from '@metaplex-foundation/js';
@@ -79,7 +90,6 @@ class SonicDeployer {
                 .map(key => key.trim())
                 .filter(key => key.length > 0);
 
-            // Create wallet objects with index
             this.wallets = privateKeys.map((key, index) => {
                 try {
                     const keypair = Keypair.fromSecretKey(bs58.decode(key));
@@ -107,129 +117,76 @@ class SonicDeployer {
                 console.log(chalk.red(`❌ ${PRIVATE_KEYS_FILE} not found.`));
                 console.log(chalk.yellow('Create a file with one private key per line'));
             } else {
-                console.log(chalk.red('❌ Error:', error.message));
+console.log(chalk.red('❌ Error:', error.message));
             }
             return false;
         }
     }
 
-async deployToken(wallet) {
-    this.spinner.start(chalk.green(`🪙 Creating token with wallet #${wallet.index}...`));
-    try {
-        // Create mint account
-        const mintAccount = await splToken.createMint(
-            this.connection,
-            wallet.keypair,           // payer
-            wallet.publicKey,         // mint authority
-            wallet.publicKey,         // freeze authority
-            9                         // decimals
-        );
+    async deployToken(wallet) {
+        this.spinner.start(chalk.green(`🪙 Creating token with wallet #${wallet.index}...`));
+        try {
+            // Create mint account
+            const mint = Keypair.generate();
+            const lamports = await this.connection.getMinimumBalanceForRentExemption(82);
+            
+            const transaction = new Transaction().add(
+                SystemProgram.createAccount({
+                    fromPubkey: wallet.publicKey,
+                    newAccountPubkey: mint.publicKey,
+                    space: 82,
+                    lamports,
+                    programId: TOKEN_PROGRAM_ID,
+                }),
+                createInitializeMintInstruction(
+                    mint.publicKey,
+                    9,  // decimals
+                    wallet.publicKey,
+                    wallet.publicKey,
+                    TOKEN_PROGRAM_ID
+                )
+            );
+
+            await sendAndConfirmTransaction(
+                this.connection,
+                transaction,
+                [wallet.keypair, mint]
+            );
 
             // Create associated token account
-        const tokenAccount = await splToken.getOrCreateAssociatedTokenAccount(
-            this.connection,
-            wallet.keypair,
-            mintAccount,
-            wallet.publicKey
-        );
-
-        wallet.tokenAccounts.set(mintAccount.toBase58(), {
-            mint: mintAccount,
-            account: tokenAccount.address
-        });
-
-        this.spinner.succeed(chalk.green(`✅ Token created: ${mintAccount.toBase58()}`));
-        return {
-            address: mintAccount.toBase58(),
-            tokenAccount: tokenAccount.address.toBase58()
-        };
-    } catch (error) {
-        this.spinner.fail(chalk.red(`❌ Failed to create token: ${error.message}`));
-        throw error;
-    }
-}
-
-async performTokenInteraction(wallet, tokenData, action) {
-    const tokenInfo = wallet.tokenAccounts.get(tokenData.address);
-    if (!tokenInfo) throw new Error('Token not found');
-
-    switch (action) {
-        case 'mint':
-            const amount = Math.floor(Math.random() * 1000) + 1;
-            await splToken.mintTo(
-                this.connection,
-                wallet.keypair,
-                tokenInfo.mint,
-                tokenInfo.account,
-                wallet.keypair,
-                amount
+            const associatedTokenAccount = await getAssociatedTokenAddress(
+                mint.publicKey,
+                wallet.publicKey
             );
-            return `Minted ${amount} tokens`;
 
-        case 'transfer':
-            const transferAmount = Math.floor(Math.random() * 100) + 1;
-            const randomWallet = this.wallets[Math.floor(Math.random() * this.wallets.length)];
-            const destinationAccount = await splToken.getOrCreateAssociatedTokenAccount(
-                this.connection,
-                wallet.keypair,
-                tokenInfo.mint,
-                randomWallet.publicKey
+            const createATAtx = new Transaction().add(
+                createAssociatedTokenAccountInstruction(
+                    wallet.publicKey,
+                    associatedTokenAccount,
+                    wallet.publicKey,
+                    mint.publicKey
+                )
             );
-            await splToken.transfer(
+
+            await sendAndConfirmTransaction(
                 this.connection,
-                wallet.keypair,
-                tokenInfo.account,
-                destinationAccount.address,
-                wallet.keypair,
-                transferAmount
+                createATAtx,
+                [wallet.keypair]
             );
-            return `Transferred ${transferAmount} tokens to wallet #${randomWallet.index}`;
 
-        case 'burn':
-            const burnAmount = Math.floor(Math.random() * 50) + 1;
-            await splToken.burn(
-                this.connection,
-                wallet.keypair,
-                tokenInfo.account,
-                tokenInfo.mint,
-                wallet.keypair,
-                burnAmount
-            );
-            return `Burned ${burnAmount} tokens`;
-    }
-}
-    async deployNFT(wallet) {
-        this.spinner.start(chalk.green(`🎨 Creating NFT collection with wallet #${wallet.index}...`));
-        try {
-            // Create NFT metadata
-            const metadata = {
-                name: `ONIXIA NFT #${Date.now()}`,
-                symbol: 'ONIX',
-                description: 'Created by ONIXIA Sonic Deployer',
-                sellerFeeBasisPoints: 500, // 5%
-                image: null // No image for this example
-            };
+            wallet.tokenAccounts.set(mint.publicKey.toBase58(), {
+                mint: mint.publicKey,
+                account: associatedTokenAccount
+            });
 
-            // Create NFT using Metaplex
-            const { nft } = await this.metaplex
-                .nfts()
-                .create({
-                    uri: metadata,
-                    name: metadata.name,
-                    symbol: metadata.symbol,
-                    sellerFeeBasisPoints: metadata.sellerFeeBasisPoints,
-                    payer: wallet.keypair
-                });
-
-            wallet.nftAccounts.set(nft.address.toBase58(), nft);
-
-            this.spinner.succeed(chalk.green(`✅ NFT Collection created: ${nft.address.toBase58()}`));
+            this.spinner.succeed(chalk.green(`✅ Token created: ${mint.publicKey.toBase58()}`));
             return {
-                address: nft.address.toBase58(),
-                metadata: nft.metadataAddress.toBase58()
+                address: mint.publicKey.toBase58(),
+                tokenAccount: associatedTokenAccount.toBase58()
             };
+
         } catch (error) {
-            this.spinner.fail(chalk.red(`❌ Failed to create NFT: ${error.message}`));
+            this.spinner.fail(chalk.red(`❌ Failed to create token: ${error.message}`));
             throw error;
         }
     }
@@ -238,90 +195,111 @@ async performTokenInteraction(wallet, tokenData, action) {
         const tokenInfo = wallet.tokenAccounts.get(tokenData.address);
         if (!tokenInfo) throw new Error('Token not found');
 
-        switch (action) {
-            case 'mint':
-                const amount = Math.floor(Math.random() * 1000) + 1;
-                await mintTo(
-                    this.connection,
-                    wallet.keypair,
-                    tokenInfo.mint,
-                    tokenInfo.account,
-                    wallet.keypair,
-                    amount
-                );
-                return `Minted ${amount} tokens`;
-
-            case 'transfer':
-                const transferAmount = Math.floor(Math.random() * 100) + 1;
-                const randomWallet = this.wallets[Math.floor(Math.random() * this.wallets.length)];
-                const destinationAccount = await getOrCreateAssociatedTokenAccount(
-                    this.connection,
-                    wallet.keypair,
-                    tokenInfo.mint,
-                    randomWallet.publicKey
-                );
-                await transfer(
-                    this.connection,
-                    wallet.keypair,
-                    tokenInfo.account,
-                    destinationAccount.address,
-                    wallet.keypair,
-                    transferAmount
-                );
-                return `Transferred ${transferAmount} tokens to wallet #${randomWallet.index}`;
-
-            case 'burn':
-                const burnAmount = Math.floor(Math.random() * 50) + 1;
-                await burn(
-                    this.connection,
-                    wallet.keypair,
-                    tokenInfo.account,
-                    tokenInfo.mint,
-                    wallet.keypair,
-                    burnAmount
-                );
-                return `Burned ${burnAmount} tokens`;
-        }
-    }
-
-    async performNFTInteraction(wallet, nftData, action) {
-        const nft = wallet.nftAccounts.get(nftData.address);
-        if (!nft) throw new Error('NFT not found');
+        const tokenMint = new PublicKey(tokenInfo.mint);
+        const tokenAccount = new PublicKey(tokenInfo.account);
 
         switch (action) {
-            case 'mint':
-                const { nft: newNFT } = await this.metaplex
-                    .nfts()
-                    .create({
-                        uri: nft.uri,
-                        name: `${nft.name} #${Date.now()}`,
-                        sellerFeeBasisPoints: nft.sellerFeeBasisPoints,
-                        collection: nft.address,
-                        payer: wallet.keypair
-                    });
-                return `Minted new NFT: ${newNFT.address.toBase58()}`;
+            case 'mint': {
+                try {
+                    const amount = Math.floor(Math.random() * 1000) + 1;
+                    const transaction = new Transaction().add(
+                        createMintToInstruction(
+                            tokenMint,
+                            tokenAccount,
+                            wallet.publicKey,
+                            amount,
+                            [wallet.keypair],
+                            TOKEN_PROGRAM_ID
+                        )
+                    );
+                    
+                    await sendAndConfirmTransaction(
+                        this.connection,
+                        transaction,
+                        [wallet.keypair]
+                    );
+                    return `Minted ${amount} tokens`;
+                } catch (error) {
+                    throw new Error(`Mint failed: ${error.message}`);
+                }
+            }
 
-            case 'transfer':
-                const randomWallet = this.wallets[Math.floor(Math.random() * this.wallets.length)];
-                await this.metaplex
-                    .nfts()
-                    .transfer({
-                        nftOrSft: nft,
-                        authority: wallet.keypair,
-                        fromOwner: wallet.publicKey,
-                        toOwner: randomWallet.publicKey
-                    });
-                return `Transferred NFT to wallet #${randomWallet.index}`;
+            case 'transfer': {
+                try {
+                    const amount = Math.floor(Math.random() * 100) + 1;
+                    const randomWallet = this.wallets[Math.floor(Math.random() * this.wallets.length)];
+                    
+                    // Get destination token account
+                    const destinationATA = await getAssociatedTokenAddress(
+                        tokenMint,
+                        randomWallet.publicKey
+                    );
 
-            case 'updateMetadata':
-                await this.metaplex
-                    .nfts()
-                    .update({
-                        nftOrSft: nft,
-                        name: `${nft.name} Updated ${Date.now()}`,
-payer: wallet.keypair
-                });
-                return `Updated NFT metadata`;
+                    // Check if destination account exists
+                    try {
+                        await getAccount(this.connection, destinationATA);
+                    } catch {
+                        // Create ATA if it doesn't exist
+                        const createAtaIx = createAssociatedTokenAccountInstruction(
+                            wallet.publicKey,
+                            destinationATA,
+                            randomWallet.publicKey,
+                            tokenMint
+                        );
+                        const tx = new Transaction().add(createAtaIx);
+                        await sendAndConfirmTransaction(this.connection, tx, [wallet.keypair]);
+                    }
+
+                    // Transfer tokens
+                    const transferIx = createTransferInstruction(
+                        tokenAccount,
+                        destinationATA,
+                        wallet.publicKey,
+                        amount,
+                        [wallet.keypair],
+                        TOKEN_PROGRAM_ID
+                    );
+
+                    const tx = new Transaction().add(transferIx);
+                    await sendAndConfirmTransaction(
+                        this.connection,
+                        tx,
+                        [wallet.keypair]
+                    );
+
+                    return `Transferred ${amount} tokens to wallet #${randomWallet.index}`;
+                } catch (error) {
+                    throw new Error(`Transfer failed: ${error.message}`);
+                }
+            }
+
+            case 'burn': {
+                try {
+                    const amount = Math.floor(Math.random() * 50) + 1;
+                    const transaction = new Transaction().add(
+                        createBurnInstruction(
+                            tokenAccount,
+                            tokenMint,
+                            wallet.publicKey,
+                            amount,
+                            [wallet.keypair],
+                            TOKEN_PROGRAM_ID
+                        )
+                    );
+
+                    await sendAndConfirmTransaction(
+                        this.connection,
+                        transaction,
+                        [wallet.keypair]
+                    );
+                    return `Burned ${amount} tokens`;
+                } catch (error) {
+                    throw new Error(`Burn failed: ${error.message}`);
+                }
+            }
+
+default:
+                throw new Error(`Unknown action: ${action}`);
         }
     }
 
@@ -385,99 +363,104 @@ payer: wallet.keypair
         }
     }
 
-async startDeployment() {
-    clearScreen();
-    console.log(chalk.yellow('\n🚀 Contract Deployment'));
-    console.log(chalk.green('1. Deploy Token'));
-    console.log(chalk.green('2. Deploy NFT'));
-    console.log(chalk.green('3. Return to Main Menu'));
+    async startDeployment() {
+        clearScreen();
+        console.log(chalk.yellow('\n🚀 Contract Deployment'));
+        console.log(chalk.green('1. Deploy Token'));
+        console.log(chalk.green('2. Return to Main Menu'));
 
-    const choice = await question(chalk.yellow('\nEnter your choice (1-3): '));
-    
-    if (choice === '3') return;
-    
-    const contractType = choice === '1' ? 'Token' : 'NFT';
-    const interactions = choice === '1' ? TOKEN_INTERACTIONS : NFT_INTERACTIONS;
-
-    try {
-        console.log(chalk.cyan(`\n📝 Deploying ${contractType} contracts and performing ${this.settings.interactionCount} interactions per wallet\n`));
-
-        for (const wallet of this.wallets) {
-            try {
-                console.log(chalk.yellow(`\n👛 Processing Wallet #${wallet.index}: ${wallet.publicKey.toString()}`));
-                
-                // Check balance
-                const balance = await this.connection.getBalance(wallet.publicKey);
-                console.log(chalk.cyan(`Balance: ${(balance / 1e9).toFixed(4)} SOL`));
-                
-                if (balance < 0.1 * 1e9) {
-                    console.log(chalk.red('❌ Insufficient balance, skipping wallet'));
-                    continue;
-                }
-
-                // Deploy contract
-                const result = choice === '1' 
-                    ? await this.deployToken(wallet)
-                    : await this.deployNFT(wallet);
-
-                // Add to deployments
-                this.deployments.push({
-                    timestamp: new Date(),
-                    walletIndex: wallet.index,
-                    type: contractType,
-                    address: result.address
-                });
-
-                // Perform random interactions
-                console.log(chalk.yellow(`\n🔄 Starting ${this.settings.interactionCount} random interactions...\n`));
-                
-                for (let i = 1; i <= this.settings.interactionCount; i++) {
-                    const action = interactions[Math.floor(Math.random() * interactions.length)];
-                    
-                    this.spinner.start(chalk.cyan(`Interaction ${i}/${this.settings.interactionCount}: ${action}`));
-                    
-                    try {
-                        const interactionResult = choice === '1'
-                            ? await this.performTokenInteraction(wallet, result, action)
-                            : await this.performNFTInteraction(wallet, result, action);
-
-                        this.spinner.succeed(chalk.green(`✅ ${interactionResult}`));
-                        
-                        // Add to interactions log
-                        this.interactions.push({
-                            timestamp: new Date(),
-                            walletIndex: wallet.index,
-                            type: contractType,
-                            action: action,
-                            result: interactionResult
-                        });
-
-                        // Wait for interval unless it's the last interaction
-                        if (i < this.settings.interactionCount) {
-                            await new Promise(r => setTimeout(r, this.settings.interactionInterval * 60 * 1000));
-                        }
-                    } catch (error) {
-                        this.spinner.fail(chalk.red(`❌ Interaction failed: ${error.message}`));
-                    }
-                }
-
-            } catch (error) {
-                console.log(chalk.red(`\n❌ Error processing wallet: ${error.message}`));
-                await question(chalk.yellow('Press Enter to continue with next wallet...'));
-                continue;
-            }
+        const choice = await question(chalk.yellow('\nEnter your choice (1-2): '));
+        
+        if (choice === '2') return;
+        
+        if (choice !== '1') {
+            console.log(chalk.red('❌ Invalid choice'));
+            await question(chalk.yellow('Press Enter to continue...'));
+            return;
         }
 
-        console.log(chalk.green('\n✅ Deployment and interactions completed!'));
-        console.log(chalk.yellow('\n📄 Generating report...'));
-        this.generateReport();
-        await question(chalk.yellow('\nPress Enter to return to main menu...'));
-        
-    } catch (error) {
-        console.log(chalk.red(`\n❌ An error occurred: ${error.message}`));
-        await question(chalk.yellow('\nPress Enter to return to main menu...'));
+        try {
+            console.log(chalk.cyan(`\n📝 Deploying Token contracts and performing ${this.settings.interactionCount} interactions per wallet\n`));
+
+            for (const wallet of this.wallets) {
+                try {
+                    console.log(chalk.yellow(`\n👛 Processing Wallet #${wallet.index}: ${wallet.publicKey.toString()}`));
+                    
+                    const balance = await this.connection.getBalance(wallet.publicKey);
+                    console.log(chalk.cyan(`Balance: ${(balance / 1e9).toFixed(4)} SOL`));
+                    
+                    if (balance < 0.1 * 1e9) {
+                        console.log(chalk.red('❌ Insufficient balance, skipping wallet'));
+                        continue;
+                    }
+
+                    const result = await this.deployToken(wallet);
+
+                    this.deployments.push({
+                        timestamp: new Date(),
+                        walletIndex: wallet.index,
+                        type: 'Token',
+                        address: result.address
+                    });
+
+                    console.log(chalk.yellow(`\n🔄 Starting ${this.settings.interactionCount} random interactions...\n`));
+                    
+                    for (let i = 1; i <= this.settings.interactionCount; i++) {
+                        const action = TOKEN_INTERACTIONS[Math.floor(Math.random() * TOKEN_INTERACTIONS.length)];
+                        
+                        this.spinner.start(chalk.cyan(`Interaction ${i}/${this.settings.interactionCount}: ${action}`));
+                        
+                        try {
+                            const interactionResult = await this.performTokenInteraction(wallet, result, action);
+                            this.spinner.succeed(chalk.green(`✅ ${interactionResult}`));
+                            
+                            this.interactions.push({
+                                timestamp: new Date(),
+                                walletIndex: wallet.index,
+                                type: 'Token',
+                                action: action,
+                                result: interactionResult
+                            });
+
+                            if (i < this.settings.interactionCount) {
+                                await new Promise(r => setTimeout(r, this.settings.interactionInterval * 60 * 1000));
+                            }
+                        } catch (error) {
+                            this.spinner.fail(chalk.red(`❌ Interaction failed: ${error.message}`));
+                        }
+                    }
+
+                } catch (error) {
+                    console.log(chalk.red(`\n❌ Error processing wallet: ${error.message}`));
+                    await question(chalk.yellow('Press Enter to continue with next wallet...'));
+                    continue;
+                }
+            }
+
+            console.log(chalk.green('\n✅ Deployment and interactions completed!'));
+            console.log(chalk.yellow('\n📄 Generating report...\n'));
+            
+            // Show report and wait for user input
+            const report = this.generateReport();
+            console.log(report);
+
+            let continueToMenu = false;
+            while (!continueToMenu) {
+                const answer = await question(chalk.yellow('\nPress M to return to main menu, R to regenerate report: '));
+                if (answer.toLowerCase() === 'm') {
+                    continueToMenu = true;
+                } else if (answer.toLowerCase() === 'r') {
+                    clearScreen();
+                    console.log(this.generateReport());
+                }
+            }
+            
+        } catch (error) {
+            console.log(chalk.red(`\n❌ An error occurred: ${error.message}`));
+            await question(chalk.yellow('\nPress Enter to return to main menu...'));
+        }
     }
-}
+
     generateReport() {
         const deployTable = new Table({
             head: ['Time', 'Wallet #', 'Type', 'Address'].map(h => chalk.yellow(h))
@@ -602,7 +585,6 @@ async function main() {
     await deployer.displayMenu();
 }
 
-// Error handling
 process.on('unhandledRejection', (error) => {
     console.log(chalk.red('\n❌ An error occurred:', error.message));
     process.exit(1);
