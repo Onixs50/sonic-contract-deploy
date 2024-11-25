@@ -42,7 +42,7 @@ your_private_key_2
 
 Run the deployer:
 ```bash
-npm start
+node deploy.js
 ```
 
 ## Menu Options
