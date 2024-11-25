@@ -18,8 +18,8 @@ Created by ONIXIA
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-username/sonic-deployer.git
-cd sonic-deployer
+git clone https://github.com/Onixs50/sonic-contract-deploy.git
+cd sonic-contract-deploy
 ```
 
 2. Install dependencies:
